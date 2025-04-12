@@ -1,84 +1,33 @@
-// #include <windows.h>
-// #include <iostream>
-// #include <string>
-
-// const wchar_t* writerToReader = L"Local\\WriterToReader";
-// const wchar_t* readerToWriter = L"Local\\ReaderToWriter";
-// const int bufferSize = 256;
-
-// void sendMessage(HANDLE hMapFile, char* pBuf) {
-//     std::string message;
-//     std::cout << "You: ";
-//     std::getline(std::cin, message);
-//     strncpy_s(pBuf, bufferSize, message.c_str(), bufferSize);
-// }
-
-// void receiveMessage(char* pBuf) {
-//     if (strlen(pBuf) > 0) {
-//         std::cout << "Friend: " << pBuf << "\n";
-//         memset(pBuf, 0, bufferSize);  // Clear the buffer after reading
-//     }
-// }
-
-// int main() {
-//     // Create shared memory for writer-to-reader
-//     HANDLE hMapWrite = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, bufferSize, writerToReader);
-//     HANDLE hMapRead = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, bufferSize, readerToWriter);
-
-//     if (!hMapWrite || !hMapRead) {
-//         std::cerr << "Could not create file mapping (" << GetLastError() << ")\n";
-//         return 1;
-//     }
-
-//     char* pWriteBuf = (char*)MapViewOfFile(hMapWrite, FILE_MAP_ALL_ACCESS, 0, 0, bufferSize);
-//     char* pReadBuf = (char*)MapViewOfFile(hMapRead, FILE_MAP_ALL_ACCESS, 0, 0, bufferSize);
-
-//     if (!pWriteBuf || !pReadBuf) {
-//         std::cerr << "Could not map view of file (" << GetLastError() << ")\n";
-//         return 1;
-//     }
-
-//     std::cout << "Chat started. Type 'exit' to end chat.\n";
-
-//     while (true) {
-//         sendMessage(hMapWrite, pWriteBuf);
-//         if (strcmp(pWriteBuf, "exit") == 0) break;
-
-//         Sleep(500);  // Give time for the other process
-
-//         receiveMessage(pReadBuf);
-//     }
-
-//     // Cleanup
-//     UnmapViewOfFile(pWriteBuf);
-//     UnmapViewOfFile(pReadBuf);
-//     CloseHandle(hMapWrite);
-//     CloseHandle(hMapRead);
-
-//     return 0;
-// }
-
-
 #include <windows.h>
 #include <iostream>
-#include <string>
 #include <thread>
+#include "trapdoor.h"
 
 const wchar_t* writerToReader = L"Local\\WriterToReader";
 const wchar_t* readerToWriter = L"Local\\ReaderToWriter";
-const int bufferSize = 256;
+const int bufferSize = 512;
 
 char* pWriteBuf;
 char* pReadBuf;
 bool running = true;
 
+RSAKey myKey;
+RSAKey peerKey;
+
 void sendMessage() {
     while (running) {
-        std::string message;
-        std::getline(std::cin, message);
-        strncpy_s(pWriteBuf, bufferSize, message.c_str(), bufferSize);
+        std::string msg;
+        std::getline(std::cin, msg);
 
-        if (message == "exit") {
+        // Compute SHA-256 hash of the message
+    std::string hash = simpleSHA256(msg);
+    std::cout << "SHA-256 Hash of Message: " << hash << std::endl;
+
+        ll signature = signMessage(msg, myKey.d, myKey.n);
+        std::string fullMessage = msg + "|" + std::to_string(signature);
+        strncpy_s(pWriteBuf, bufferSize, fullMessage.c_str(), bufferSize);
+
+        if (msg == "exit") {
             running = false;
             break;
         }
@@ -88,36 +37,40 @@ void sendMessage() {
 void receiveMessage() {
     while (running) {
         if (strlen(pReadBuf) > 0) {
-            std::cout << "Friend: " << pReadBuf << "\n";
+            std::string raw(pReadBuf);
             memset(pReadBuf, 0, bufferSize);
+
+            size_t sep = raw.find('|');
+            if (sep != std::string::npos) {
+                std::string message = raw.substr(0, sep);
+                ll signature = std::stoll(raw.substr(sep + 1));
+
+                bool valid = verifySignature(message, signature, peerKey.e, peerKey.n);
+                // std::cout << "Friend: " << message << (valid ? " ✅" : " ❌") << "\n";
+                std::cout << "Friend: " << message << "\n";
+            }
         }
-        Sleep(100);  // Avoid excessive CPU usage
+        Sleep(100);
     }
 }
 
 int main() {
+    myKey = generateRSAKeys();
+    std::cout << "Your Public Key (n e): " << myKey.n << " " << myKey.e << "\n";
+    std::cout << "Enter Peer Public Key (n e): ";
+    std::cin >> peerKey.n >> peerKey.e;
+    std::cin.ignore();
+
     HANDLE hMapWrite = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, bufferSize, writerToReader);
     HANDLE hMapRead = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, bufferSize, readerToWriter);
-
-    if (!hMapWrite || !hMapRead) {
-        std::cerr << "Could not create file mapping (" << GetLastError() << ")\n";
-        return 1;
-    }
 
     pWriteBuf = (char*)MapViewOfFile(hMapWrite, FILE_MAP_ALL_ACCESS, 0, 0, bufferSize);
     pReadBuf = (char*)MapViewOfFile(hMapRead, FILE_MAP_ALL_ACCESS, 0, 0, bufferSize);
 
-    if (!pWriteBuf || !pReadBuf) {
-        std::cerr << "Could not map view of file (" << GetLastError() << ")\n";
-        return 1;
-    }
-
-    std::cout << "Chat started. Type 'exit' to end chat.\n";
-
-    std::thread receiveThread(receiveMessage);
-    sendMessage();  // Main thread handles sending
-
-    receiveThread.join();  // Ensure receiving thread stops
+    std::cout << "Chat started (Writer). Type 'exit' to end chat.\n";
+    std::thread recv(receiveMessage);
+    sendMessage();
+    recv.join();
 
     UnmapViewOfFile(pWriteBuf);
     UnmapViewOfFile(pReadBuf);
