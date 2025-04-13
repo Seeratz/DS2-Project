@@ -1,10 +1,9 @@
-// chat_writer.cpp
 #include <windows.h>
 #include <iostream>
 #include <thread>
-#include "trapdoor.h"
 #include <fstream>
-
+#include "trapdoor.h"
+#include "user_manager.h"
 
 const wchar_t* writerToReader = L"Local\\WriterToReader";
 const wchar_t* readerToWriter = L"Local\\ReaderToWriter";
@@ -16,6 +15,8 @@ bool running = true;
 
 RSAKey myKey;
 RSAKey peerKey;
+std::string username, peerUsername;
+std::string chatLogFile;
 
 void sendMessage() {
     while (running) {
@@ -29,11 +30,9 @@ void sendMessage() {
         std::string fullMessage = msg + "|" + std::to_string(signature);
         strncpy_s(pWriteBuf, bufferSize, fullMessage.c_str(), bufferSize);
 
-        // Log sent message
-        std::ofstream chatLog("writer_chat.txt", std::ios::app);
+        std::ofstream chatLog(chatLogFile, std::ios::app);
         if (chatLog.is_open()) {
             chatLog << "You: " << msg << "\n";
-            chatLog.close();
         }
 
         if (msg == "exit") {
@@ -55,13 +54,11 @@ void receiveMessage() {
                 ll signature = std::stoll(raw.substr(sep + 1));
 
                 bool valid = verifySignature(message, signature, peerKey.e, peerKey.n);
-                std::cout << "Friend: " << message << "\n";
+                std::cout << peerUsername << ": " << message << (valid ? " [✔]" : " [✘ Invalid Signature]") << "\n";
 
-                // Log received message
-                std::ofstream chatLog("writer_chat.txt", std::ios::app);
+                std::ofstream chatLog(chatLogFile, std::ios::app);
                 if (chatLog.is_open()) {
-                    chatLog << "Friend: " << message << "\n";
-                    chatLog.close();
+                    chatLog << peerUsername << ": " << message << "\n";
                 }
             }
         }
@@ -70,11 +67,31 @@ void receiveMessage() {
 }
 
 int main() {
-    myKey = generateRSAKeys();
+    loadUsersFromFile("users.txt");
+
+    std::cout << "Enter your username: ";
+    std::getline(std::cin, username);
+
+    if (userExists(username)) {
+        myKey = getUserKey(username);
+        std::cout << "Welcome back, " << username << "!\n";
+    } else {
+        myKey = generateRSAKeys();
+        addUser(username, myKey);
+        saveUsersToFile("users.txt");
+        std::cout << "New user created: " << username << "\n";
+    }
+
     std::cout << "Your Public Key (n e): " << myKey.n << " " << myKey.e << "\n";
+    
+    std::cout << "Enter peer username: ";
+    std::getline(std::cin, peerUsername);
+    
     std::cout << "Enter Peer Public Key (n e): ";
     std::cin >> peerKey.n >> peerKey.e;
     std::cin.ignore();
+
+    chatLogFile = username + "_" + peerUsername + ".txt";
 
     HANDLE hMapWrite = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, bufferSize, writerToReader);
     HANDLE hMapRead = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, bufferSize, readerToWriter);
@@ -83,6 +100,7 @@ int main() {
     pReadBuf = (char*)MapViewOfFile(hMapRead, FILE_MAP_ALL_ACCESS, 0, 0, bufferSize);
 
     std::cout << "Chat started (Writer). Type 'exit' to end chat.\n";
+
     std::thread recv(receiveMessage);
     sendMessage();
     recv.join();
