@@ -1,9 +1,9 @@
-
-// chat_reader.cpp
 #include <windows.h>
 #include <iostream>
 #include <thread>
 #include "trapdoor.h"
+#include <fstream>
+
 
 const wchar_t* writerToReader = L"Local\\WriterToReader";
 const wchar_t* readerToWriter = L"Local\\ReaderToWriter";
@@ -21,12 +21,19 @@ void sendMessage() {
         std::string msg;
         std::getline(std::cin, msg);
 
-        // Compute SHA-256 hash of the message
         std::string hash = simpleSHA256(msg);
         std::cout << "SHA-256 Hash of Message: " << hash << std::endl;
+
         ll signature = signMessage(msg, myKey.d, myKey.n);
         std::string fullMessage = msg + "|" + std::to_string(signature);
         strncpy_s(pWriteBuf, bufferSize, fullMessage.c_str(), bufferSize);
+
+        // Log sent message
+        std::ofstream chatLog("reader_chat.txt", std::ios::app);
+        if (chatLog.is_open()) {
+            chatLog << "You: " << msg << "\n";
+            chatLog.close();
+        }
 
         if (msg == "exit") {
             running = false;
@@ -34,6 +41,7 @@ void sendMessage() {
         }
     }
 }
+
 
 void receiveMessage() {
     while (running) {
@@ -47,8 +55,14 @@ void receiveMessage() {
                 ll signature = std::stoll(raw.substr(sep + 1));
 
                 bool valid = verifySignature(message, signature, peerKey.e, peerKey.n);
-                // std::cout << "Friend: " << message << (valid ? " ✅" : " ❌") << "\n";
                 std::cout << "Friend: " << message << "\n";
+
+                // Log received message
+                std::ofstream chatLog("reader_chat.txt", std::ios::app);
+                if (chatLog.is_open()) {
+                    chatLog << "Friend: " << message << "\n";
+                    chatLog.close();
+                }
             }
         }
         Sleep(100);
